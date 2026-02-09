@@ -1,140 +1,219 @@
 # BMC Protocol Toolkit
 
-從零實作 IPMI 2.0 協議解析與測試工具。
+從零開始用 C 語言實作 IPMI 和 Redfish 協議
 
-## 專案動機
+## 專案起源
 
-想理解 BMC 怎麼運作，但光用 ipmitool 覺得還不夠。這個專案透過實際撰寫 C 程式碼來實作 IPMI 協議，過程中深入理解了封包格式、checksum 計算、網路傳輸等細節。
+想真正理解 BMC 怎麼運作，但發現光用 ipmitool 不夠。所以決定自己寫一個，過程中把 IPMI 封包格式、checksum 計算、UDP socket 這些都自己做一遍。雖然花了不少時間除錯，但確實把協議的每個細節都搞懂了。
 
-## 實作內容
+## 功能
 
-### IPMI 協議處理
-- RMCP 封包解析與建構
-- Two's complement checksum 驗證
-- Session 管理（基礎版）
-- 支援的命令：Get Device ID
+### IPMI 部分
+- 完整的 RMCP 封包處理（建構和解析）
+- Two's complement checksum（這個花了點時間才搞對）
+- UDP socket 傳輸層，有處理 timeout
+- 基本的 session 管理
+- 實作了兩個命令：Get Device ID 和 Get Chassis Status
 
-### 網路傳輸層
-- UDP socket 實作
-- Timeout 處理（5 秒）
-- 錯誤處理與重試機制
-- 支援自訂 port
+### Redfish 部分
+- HTTP/HTTPS 客戶端（用 libcurl）
+- JSON 解析（用 json-c）
+- Basic 認證
+- 實作了 System Info 和 Thermal 兩個端點
 
 ### CLI 工具
-- 命令列參數解析（getopt）
-- 一般模式與 verbose 模式
-- 清晰的錯誤訊息
+- 可以用同一個指令操作 IPMI 和 Redfish
+- 輸出有美化，用了 Unicode 畫框
+- 有表格模式可以選
+- Verbose 模式會顯示完整封包分析
+- 用 Valgrind 驗證過，沒有記憶體洩漏
 
 ## 編譯
 ```bash
 make
 ```
 
-## 測試
+需要的套件：
+```bash
+sudo apt install libcurl4-openssl-dev libjson-c-dev
+```
 
-### 啟動測試環境
+## 使用方式
+
+### IPMI
+```bash
+# 查詢 BMC 裝置資訊
+./bmctool -H 192.168.1.100 ipmi get-device-id
+
+# 查詢機箱電源狀態
+./bmctool -H 192.168.1.100 ipmi chassis-status
+
+# 顯示詳細封包內容
+./bmctool -H 192.168.1.100 -v ipmi get-device-id
+
+# 表格輸出
+./bmctool -H 192.168.1.100 -f table ipmi get-device-id
+```
+
+### Redfish
+```bash
+# 查詢系統資訊
+./bmctool -H https://192.168.1.100 -U admin -P password redfish system 1
+
+# 查詢溫度資訊
+./bmctool -H https://192.168.1.100 -U admin -P password redfish thermal 1
+```
+
+## 測試環境
+
+沒有實體 BMC 的話可以用 mock server 測試：
 ```bash
 # Terminal 1: 啟動 IPMI responder
-python3 ~/ipmi_responder.py
+python3 tests/ipmi_responder.py
+
+# Terminal 2: 啟動 Redfish mock server
+python3 tests/redfish_mock_server.py
+
+# Terminal 3: 測試
+./bmctool -H 127.0.0.1 -p 9623 ipmi get-device-id
+./bmctool -H http://127.0.0.1:8000 -U admin -P password redfish system 1
 ```
 
-### 執行測試
+整合測試：
 ```bash
-# Terminal 2: 測試工具
-./bmctool -H 127.0.0.1 -p 9623 get-device-id
-
-# Verbose 模式（顯示完整封包）
-./bmctool -H 127.0.0.1 -p 9623 -v get-device-id
+./tests/integration_test.sh
 ```
 
-**輸出範例：**
-```
-Device ID          : 0x20
-Device Revision    : 0
-Firmware Version   : 1.0
-IPMI Version       : 2.0
-Manufacturer ID    : 0x0000b4 (Advantech)
-Product ID         : 0x0000
-```
-
-## 程式碼品質
-
-### 記憶體檢查
+記憶體檢查：
 ```bash
-valgrind --leak-check=full ./bmctool -H 127.0.0.1 -p 9623 get-device-id
+valgrind --leak-check=full ./bmctool -H 127.0.0.1 -p 9623 ipmi get-device-id
 ```
-
-**結果：**
-- 記憶體分配：2 allocs, 2 frees, 1364 bytes
-- 洩漏：0 bytes
-- 錯誤：0 errors
-
-### 測試覆蓋
-```bash
-make test
-```
-
-包含：
-- Common 模組測試（日誌、checksum）
-- IPMI 封包解析測試
-- 網路傳輸測試
 
 ## 專案結構
 ```
 src/
-  common/    - 日誌、錯誤處理、hex dump
-  ipmi/      - 封包處理、命令實作、網路傳輸
-  cli/       - 命令列介面
-include/     - 標頭檔
-tests/       - 測試程式
+  common/          日誌、錯誤處理、輸出格式化
+  ipmi/           IPMI 協議實作
+    ├── checksum   Two's complement checksum
+    ├── packet     封包建構和解析
+    ├── transport  UDP socket 傳輸層
+    └── commands   IPMI 命令
+  redfish/        Redfish 協議實作
+    ├── client     HTTP 客戶端 (libcurl)
+    ├── json       JSON 解析 (json-c)
+    └── api        Redfish API
+  cli/            命令列介面
 ```
 
-## 技術重點
+## 實作重點
 
-### 協議實作
-- 嚴格按照 IPMI 2.0 規格書（Intel）
-- 處理 struct packing 和 byte ordering
-- 實作 two's complement checksum
+### IPMI 封包格式
+```
+UDP 封包 (21 bytes)
+├── RMCP Header (4)      版本、序號、類別
+├── Session Header (9)   認證類型、Session ID
+├── Message Length (1)   
+└── IPMI Message (7)
+    ├── Header (6)       目標位址、NetFn、Checksum
+    └── Checksum (1)     Data checksum
+```
 
-### 系統程式設計
-- UDP socket 管理
-- Timeout 與非阻塞 I/O
-- 完整的資源清理（零洩漏）
+### Checksum 計算
 
-### 程式品質
-- 模組化設計
-- 清晰的錯誤處理
-- Valgrind 驗證
+這個花了點時間才搞懂，IPMI 用的是 two's complement：
+```c
+uint8_t ipmi_checksum(const uint8_t* data, size_t len) {
+    uint8_t sum = 0;
+    for (size_t i = 0; i < len; i++) {
+        sum += data[i];
+    }
+    return (0x100 - sum) & 0xFF;
+}
+```
 
-## 開發過程
+重點是所有相關 bytes 加起來（包括 checksum）低 8 位元要是 0。
 
-這個專案讓我學到：
-1. 讀懂並實作二進位網路協議
-2. C 語言的記憶體管理和指標操作
-3. Socket 程式設計和網路除錯
-4. 從規格書到實作的完整流程
+### Struct Packing
 
-比較有挑戰的地方：
-- IPMI checksum 計算（two's complement）
-- Struct packing 對齊問題
-- 封包格式的細節很多，需要仔細對照規格
+封包處理需要確保 struct 不會被 padding：
+```c
+typedef struct __attribute__((packed)) {
+    uint8_t version;
+    uint8_t reserved;
+    uint8_t sequence;
+    uint8_t class;
+} rmcp_header_t;
+```
 
-## 與現有工具的差異
+### 網路位元組序
 
-ipmitool 是成熟的生產工具（100k+ 行），這個專案是學習導向（~2k 行），重點在理解協議本身。
+需要處理 endianness：
+```c
+session_id = ntohl(session_id);  // network to host (32-bit)
+```
 
-**差異化功能：**
-- 詳細的封包分析工具（verbose 模式）
-- 簡潔的程式碼架構，容易理解
-- 模組化設計，方便擴展
+## 踩過的坑
+
+1. **Checksum 一直算錯**  
+   一開始沒搞懂 two's complement 的概念，後來對照規格書和用 Wireshark 抓封包才找到問題
+
+2. **Struct packing 問題**  
+   編譯器會自動對齊 struct，導致封包格式錯誤。要加 `__attribute__((packed))`
+
+3. **Endianness 轉換遺漏**  
+   網路傳輸是 big-endian，要記得用 htonl/ntohl 轉換
+
+4. **VirtualBMC 只支援 RMCP+**  
+   原本想用 VirtualBMC 測試，結果發現它要求認證。最後改用自己寫的 Python responder
+
+## 學到什麼
+
+**技術面：**
+- 如何讀懂並實作二進位網路協議
+- C 語言的記憶體管理和指標操作
+- Socket 程式設計和網路除錯
+- 從規格書到實作的完整流程
+
+**除錯技巧：**
+- 用 Wireshark 抓包對照規格書
+- Hex dump 逐 byte 比對
+- Valgrind 檢查記憶體問題
+- GDB 追蹤程式執行
+
+**心得：**
+協議細節很多，需要很有耐心。但親手實作過一次之後，對 BMC 的運作方式就很清楚了。比只會用 ipmitool 的理解深入很多。
+
+## 與 ipmitool 的差異
+
+| 項目 | ipmitool | 這個專案 |
+|------|----------|---------|
+| 程式碼量 | 100k+ 行 | ~4k 行 |
+| 用途 | 生產環境使用 | 學習/研究用 |
+| 封包分析 | 基本功能 | 詳細分析（verbose 模式）|
+| 程式碼可讀性 | 較複雜 | 清楚的模組化設計 |
+
+這不是要取代 ipmitool，而是透過實作來學習。如果要在生產環境用，還是建議用 ipmitool 或 freeipmi 這類成熟工具。
+
+## 統計資料
+
+- 程式碼：約 4000 行 C
+- 協議：IPMI 2.0 + Redfish
+- 命令：4 個（2 IPMI + 2 Redfish）
+- 記憶體洩漏：0 bytes
+- 測試覆蓋：核心功能都有測試
+
+## 未來可以加的功能
+
+- SEL (System Event Log) 操作
+- Sensor reading 命令
+- FRU information 讀取
+- RMCP+ 認證支援
+- 更多 Redfish 端點
+
+如果有時間的話可能會加，但目前功能已經夠展示對協議的理解了。
 
 ## License
 
 MIT
 
 ---
-
-這是個學習專案。生產環境請用 ipmitool 或其他成熟工具。
-EOF
-
-echo "✓ README.md 已更新"
